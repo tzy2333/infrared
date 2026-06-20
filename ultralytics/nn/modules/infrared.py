@@ -56,10 +56,9 @@ class RectangularAttention(nn.Module):
 
     Designed for infrared chimney-like or column-like targets.
 
-    It enhances:
-    1. vertical continuity;
-    2. horizontal boundary response;
-    3. strip-shaped spatial response.
+    改进点：
+    1. 不再直接 x * a_h * a_w * s，避免弱红外目标被压掉。
+    2. 改成残差增强式注意力。
     """
 
     def __init__(self, channels, reduction=32, k_h=9, k_w=5):
@@ -67,21 +66,18 @@ class RectangularAttention(nn.Module):
 
         hidden = max(8, channels // reduction)
 
-        # Height descriptor: [B, C, H, 1]
         self.reduce_h = nn.Sequential(
             nn.Conv2d(channels, hidden, kernel_size=1, bias=False),
             nn.BatchNorm2d(hidden),
             nn.SiLU(inplace=True),
         )
 
-        # Width descriptor: [B, C, 1, W]
         self.reduce_w = nn.Sequential(
             nn.Conv2d(channels, hidden, kernel_size=1, bias=False),
             nn.BatchNorm2d(hidden),
             nn.SiLU(inplace=True),
         )
 
-        # Height-wise attention
         self.attn_h = nn.Conv2d(
             hidden,
             channels,
@@ -90,7 +86,6 @@ class RectangularAttention(nn.Module):
             bias=True,
         )
 
-        # Width-wise attention
         self.attn_w = nn.Conv2d(
             hidden,
             channels,
@@ -99,7 +94,6 @@ class RectangularAttention(nn.Module):
             bias=True,
         )
 
-        # Strip spatial attention
         self.strip_attn = nn.Sequential(
             nn.Conv2d(
                 2,
@@ -121,10 +115,7 @@ class RectangularAttention(nn.Module):
         )
 
     def forward(self, x):
-        # Height descriptor: [B, C, H, 1]
         x_h = x.mean(dim=3, keepdim=True)
-
-        # Width descriptor: [B, C, 1, W]
         x_w = x.mean(dim=2, keepdim=True)
 
         h_feat = self.reduce_h(x_h)
@@ -137,7 +128,10 @@ class RectangularAttention(nn.Module):
         max_out, _ = torch.max(x, dim=1, keepdim=True)
         s = self.strip_attn(torch.cat([avg_out, max_out], dim=1))
 
-        return x * a_h * a_w * s
+        attn = a_h * a_w * s
+
+        # 残差增强，不直接压制原特征
+        return x * (1.0 + 0.5 * attn)
 
 
 class VAM(nn.Module):
@@ -233,15 +227,11 @@ class DPLConv(nn.Module):
     """
     Directional Partial Lightweight Convolution.
 
-    Designed for infrared elongated object detection.
-
-    Args:
-        c1: input channels
-        c2: output channels
-        k: directional kernel size, e.g. 5, 7, 9
-        ratio: partial channel ratio for directional convolution
-        s: stride
-        act: activation
+    改进版：
+    1. 使用部分通道做方向卷积，降低计算量；
+    2. 输入前先 channel shuffle，避免固定前半通道长期参与方向卷积；
+    3. concat 后再次 channel shuffle，增强方向分支和保留分支的信息混合；
+    4. 保留残差连接。
     """
 
     def __init__(self, c1, c2, k=7, ratio=0.5, s=1, act=True):
@@ -258,8 +248,6 @@ class DPLConv(nn.Module):
 
         # 参与方向卷积的通道数
         c_part = max(8, int(c1 * ratio))
-
-        # 防止 c_part 超过 c1
         c_part = min(c_part, c1)
         c_keep = c1 - c_part
 
@@ -269,8 +257,6 @@ class DPLConv(nn.Module):
         self.act = nn.SiLU(inplace=True) if act else nn.Identity()
 
         # 方向感知轻量分支
-        # k×1 用于增强垂直方向上下文
-        # 1×k 用于补充水平方向边界信息
         self.dir_conv = nn.Sequential(
             nn.Conv2d(
                 c_part,
@@ -297,7 +283,7 @@ class DPLConv(nn.Module):
             nn.SiLU(inplace=True)
         )
 
-        # 保留分支：如果 stride=2，需要同步下采样
+        # 保留分支同步下采样
         if c_keep > 0:
             if s == 2:
                 self.keep_down = nn.AvgPool2d(kernel_size=2, stride=2)
@@ -316,22 +302,47 @@ class DPLConv(nn.Module):
         # 残差连接
         self.use_shortcut = (c1 == c2 and s == 1)
 
-    def forward(self, x):
-        x_part = x[:, :self.c_part, :, :]
+    @staticmethod
+    def channel_shuffle(x, groups=2):
+        """
+        Channel shuffle for partial convolution.
+        避免固定通道长期进入同一个分支。
+        """
+        b, c, h, w = x.size()
 
+        if c % groups != 0:
+            return x
+
+        x = x.view(b, groups, c // groups, h, w)
+        x = x.transpose(1, 2).contiguous()
+        x = x.view(b, c, h, w)
+
+        return x
+
+    def forward(self, x):
+        identity = x
+
+        # 先打乱输入通道，再划分方向分支和保留分支
+        x_mix = self.channel_shuffle(x, groups=2)
+
+        x_part = x_mix[:, :self.c_part, :, :]
         y_part = self.dir_conv(x_part)
 
         if self.c_keep > 0:
-            x_keep = x[:, self.c_part:, :, :]
+            x_keep = x_mix[:, self.c_part:, :, :]
             y_keep = self.keep_down(x_keep)
+
             y = torch.cat((y_part, y_keep), dim=1)
+
+            # concat 后再 shuffle，增强两类特征混合
+            y = self.channel_shuffle(y, groups=2)
         else:
             y = y_part
 
         y = self.fuse(y)
 
         if self.use_shortcut:
-            y = y + x
+            y = y + identity
 
         return y
 
@@ -357,10 +368,11 @@ class LightGuide(nn.Module):
 
     def forward(self, x):
         return self.guide(x)
+
 class DirectionGate(nn.Module):
     """
     Directional gated fusion.
-    使用 Guide 特征生成门控权重，调制方向特征。
+    使用 Guide 特征生成门控权重，温和调制方向特征。
     """
 
     def __init__(self, c):
@@ -377,7 +389,10 @@ class DirectionGate(nn.Module):
         fg: guide feature
         """
         g = self.gate(fg)
-        return fd * (1.0 + g)
+
+        # 原来是 fd * (1.0 + g)，增强范围是 1~2 倍
+        # 改成 1~1.5 倍，更稳
+        return fd * (1.0 + 0.5 * g)
 
 class AdaptiveFusion(nn.Module):
     """
@@ -395,7 +410,10 @@ class AdaptiveFusion(nn.Module):
 
     def forward(self, x):
         w = self.channel_gate(x)
-        return x * w + x
+
+        # 原来是 x * w + x，增强范围 1~2 倍
+        # 改成 1~1.5 倍，减少过强通道放大
+        return x * (1.0 + 0.5 * w)
 
 class DGFBlock(nn.Module):
     """
