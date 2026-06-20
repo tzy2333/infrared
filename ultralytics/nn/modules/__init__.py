@@ -59,9 +59,10 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    C2f_DCN,
+    CBAM, SpatialAttention,
 )
 from .conv import (
-    CBAM,
     ChannelAttention,
     Concat,
     Conv,
@@ -74,7 +75,6 @@ from .conv import (
     Index,
     LightConv,
     RepConv,
-    SpatialAttention,
 )
 from .head import (
     OBB,
@@ -100,6 +100,12 @@ from .transformer import (
     TransformerBlock,
     TransformerEncoderLayer,
     TransformerLayer,
+)
+
+from .infrared import (
+    RectangularAttention,
+    VAM, DPLConv, LightGuide, DirectionGate, AdaptiveFusion, DGFBlock, DPGM,
+
 )
 
 __all__ = (
@@ -179,4 +185,11 @@ __all__ = (
     "YOLOEDetect",
     "YOLOESegment",
     "v10Detect",
+    "DPLConv",
+    "LightGuide",
+    "DirectionGate",
+    "AdaptiveFusion",
+    "DGFBlock",
+    "DPGM",
 )
+

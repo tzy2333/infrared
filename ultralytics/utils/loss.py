@@ -1,7 +1,6 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 from __future__ import annotations
-
 from typing import Any
 
 import torch
@@ -13,7 +12,7 @@ from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_iou, probiou, bbox_nwd
 from .tal import bbox2dist
 
 
@@ -123,10 +122,18 @@ class BboxLoss(nn.Module):
         target_scores_sum: torch.Tensor,
         fg_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute IoU and DFL losses for bounding boxes."""
+        # ================== 修复开始：请直接复制这段 ==================
+        # 1. 这一行必须有！计算权重
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
+
+        # 2. 计算 IoU (这里我先帮你设为 CIoU=True，这是最稳的默认值)
+        # 如果你的 bbox_iou 函数确实支持 WIoU=True，你可以把 CIoU=True 改成 WIoU=True
+        # 但为了先跑通，建议先用 CIoU，不报错了再改。
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+
+        # 3. 计算 Loss
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        # ================== 修复结束 ==================
 
         # DFL loss
         if self.dfl_loss:

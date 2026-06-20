@@ -198,3 +198,62 @@ calibration_*.npy
 *.heic
 *.ico
 *.raw
+# datasets
+ultralytics/cfg/datasets/my_dataset_det/
+datasets/
+data/
+images/
+labels/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.tif
+*.tiff
+*.xml
+*.cache
+classes.txt
+
+# training outputs
+runs/
+logs/
+wandb/
+
+# weights
+*.pt
+*.pth
+*.onnx
+*.engine
+# custom dataset generated annotation files
+ultralytics/cfg/datasets/my_dataset_det/
+ultralytics/cfg/datasets/**/*.txt
+ultralytics/cfg/datasets/**/*.json
+
+# common dataset annotation files
+datasets/**/*.txt
+datasets/**/*.json
+data/**/*.txt
+data/**/*.json
+images/**/*.txt
+labels/**/*.txt
+
+# dataset images
+datasets/**/*.jpg
+datasets/**/*.jpeg
+datasets/**/*.png
+datasets/**/*.bmp
+datasets/**/*.tif
+datasets/**/*.tiff
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+data/**/*.bmp
+data/**/*.tif
+data/**/*.tiff
+images/**/*.jpg
+images/**/*.jpeg
+images/**/*.png
+labels/**/*.txt
+
+# generated cache files
+*.cache

@@ -68,7 +68,15 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    C2f_DCN,
+    CBAM,
+    VAM,
+    DPGM,
 )
+from ultralytics.nn.modules.block import C2f_SC_DCN, C2f_Freq, SPD_Ghost, EMA, ProgressiveConvUnit, SimAM, \
+    ConvDownsample, BiFPN_Add, SeparableConvBlock, REMA, LKProgressiveConvUnit, AEMA, C2fGhost, BiFPN_Concat, SA, CA, \
+    LAWD, Star_Block_CAA, C2f_Star_CAA, GetLayer, AFPN_3
+from ultralytics.nn.modules.infrared import DSC3k2, GSCM, SC_C3k2, C3k2_AP, MSLKAConv, IRMSLKAConv
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import (
@@ -1482,7 +1490,7 @@ def load_checkpoint(weight, device=None, inplace=True, fuse=False):
     return model, ckpt
 
 
-def parse_model(d, ch, verbose=True):
+def parse_model(d, ch, verbose=True,):
     """Parse a YOLO model.yaml dictionary into a PyTorch model.
 
     Args:
@@ -1553,6 +1561,37 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            C2f_DCN,
+            CBAM,
+            C2f_SC_DCN,
+            SPD_Ghost,
+            C2f_Freq,
+            EMA,
+            ProgressiveConvUnit,
+            SimAM,
+            BiFPN_Add,
+            SeparableConvBlock,
+            ConvDownsample,
+            REMA,
+            AEMA,
+            LKProgressiveConvUnit,
+            C2fGhost,
+            BiFPN_Concat,
+            CA,
+            SA,
+            LAWD,
+            Star_Block_CAA,
+            C2f_Star_CAA,
+            AFPN_3,
+            GetLayer,
+            VAM,
+            DPGM,
+            DSC3k2,
+            GSCM,
+            SC_C3k2,
+            C3k2_AP,
+            MSLKAConv,
+            IRMSLKAConv,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1572,6 +1611,10 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            LKProgressiveConvUnit,
+            DPGM,
+            SC_C3k2,
+            C3k2_AP,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1586,8 +1629,39 @@ def parse_model(d, ch, verbose=True):
             if isinstance(a, str):
                 with contextlib.suppress(ValueError):
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
+
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
-        if m in base_modules:
+        if m is BiFPN_Concat:
+            # f may be list (multi-input)
+            c1 = [ch[x] for x in f] if isinstance(f, list) else [ch[f]]
+
+            # 你的 BiFPN_Concat 是加权相加，不改变通道数
+            # 前提：输入的通道必须一致（否则 forward 里相加会报 shape mismatch）
+            c2 = c1[0]
+            if any(ci != c2 for ci in c1):
+                raise ValueError(f"BiFPN_Concat expects same channels, got {c1}. "
+                                 f"Please align channels before BiFPN_Concat.")
+
+            # 你的 __init__ 没参数，所以 args 留空
+            args = []
+        elif hasattr(m, "__name__") and m.__name__ in ("EMA", "REMA", "AEMA"):
+            c2 = ch[f]  # output channels = input channels
+            # YAML args is usually [] or [factor]; inject channels as first arg
+            args = [c2, *args]  # -> EMA(c2, factor) / REMA(c2, factor)
+        elif getattr(m, "__name__", "") == "BiFPN_Add":
+            c1 = [ch[x] for x in f] if isinstance(f, list) else [ch[f]]
+            c2 = args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
+        elif m is AFPN_3:
+            args = [[ch[x] for x in f], *args]  # ch list + out_channels
+            c2 = args[1]
+        elif m is GetLayer:
+            # GetLayer 只取 AFPN_3 输出列表中的某一层
+            # args 保持原样，比如 [0] / [1] / [2]
+            c2 = ch[f]
+        elif m in base_modules:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
